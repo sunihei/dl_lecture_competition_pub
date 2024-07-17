@@ -5,7 +5,7 @@ from statistics import mode
 
 from PIL import Image
 import numpy as np
-import pandas
+import pandas as pd
 import torch
 import torch.nn as nn
 import torchvision
@@ -21,6 +21,38 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+import spacy
+
+nlp = spacy.load("en_core_web_sm")
+parts = ["ADJ", "NOUN", "ADV","PART", "VERB","PRON","SCONJ" ]
+tags = ["JJ","NN","NNP","NNS","VB","VBD","VBG","VBN","VBP","WDT","WP","WRB", "RB",]
+
+def process_text_q(text):
+    # 数詞を数字に変換
+    num_word_to_digit = {
+        'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
+        'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9',
+        'ten': '10'
+    }
+    for word, digit in num_word_to_digit.items():
+        text = text.replace(word, digit)
+
+    # テキストを解析する
+    text = nlp(text)
+
+    # 単語と品詞と原形を抽出する
+    text_parts = []
+    for token in text.sents:
+        for token_obj in token:
+            text_parts.append([
+                str(token_obj.i), token_obj.text, token_obj.lemma_,token_obj.pos_, token_obj.tag_
+            ])
+    text_parts = pd.DataFrame(np.array(text_parts), columns=['token_no', 'text', 'lemma', 'pos', 'tag'])
+
+    #text_parts のposからpartsに含まれるものだけを抽出して、そのlennmaを単語の間に半角スペースを入れて並べる
+    text = text_parts[text_parts['pos'].isin(parts)]['lemma'].str.cat(sep=' ')
+
+    return text
 
 def process_text(text):
     # lowercase
@@ -43,8 +75,19 @@ def process_text(text):
 
     # 短縮形のカンマの追加
     contractions = {
-        "dont": "don't", "isnt": "isn't", "arent": "aren't", "wont": "won't",
-        "cant": "can't", "wouldnt": "wouldn't", "couldnt": "couldn't"
+        "dont": "do not", "don't" : "do not", "isnt": "is not", "isn't":"is not","arent": "are not","aren't":"are not", "wont": "will not", "won't":"will not",
+        "cant": "can not","can't":"can not","cannot":"can not", "wouldnt": "would not","wouldn't":"would not", "couldnt": "couldn't","couldn't":"could not",
+        "what's":"what is", "whats":"what is", "who's":"who is", "whos":"who is", "where's":"where is", "wheres":"where is", "when's":"when is", "whens":"when is",
+        "it's":"it is", "its":"it is", "i'm":"i am", "im":"i am", "i've":"i have", "ive":"i have", "you're":"you are", "youre":"you are", "you've":"you have",
+        "there's":"there is", "theres":"there is", "they're":"they are", "theyre":"they are", "they've":"they have", "theyve":"they have", "we're":"we are",
+        "let's":"let us", "lets":"let us", "that's":"that is", "thats":"that is", "who've":"who have", "whove":"who have", "what've":"what have", "whatve":"what have",
+        "i'd":"i would",
+        "didn't":"did not", "didnt":"did not", "doesn't":"does not", "doesnt":"does not", "wasn't":"was not", "wasnt":"was not", "weren't":"were not", "werent":"were not",
+        "we'll":"we will","i'll":"i will", "you'll":"you will", "he'll":"he will", "she'll":"she will",
+        "has't":"has not", "hasnt":"has not", "haven't":"have not", "havent":"have not", "hadn't":"had not", "hadnt":"had not", "shouldn't":"should not", "shouldnt":"should not",
+        "he's":"he is", "hes":"he is", "she's":"she is", "shes":"she is", "it'll":"it will", "itll":"it will", "it'd":"it would", "itd":"it would", "they'll":"they will",
+        "how's":"how is", "hows":"how is", "how'd":"how did", "howd":"how did", "how'll":"how will", "howll":"how will", "how're":"how are", "howre":"how are",
+        "here's":"here is", "heres":"here is", "there'll":"there will", "therell":"there will", "there'd":"there would", "thered":"there would", "there're":"there are"
     }
     for contraction, correct in contractions.items():
         text = text.replace(contraction, correct)
@@ -77,7 +120,7 @@ class VQADataset(torch.utils.data.Dataset):
 
         # 質問文に含まれる単語を辞書に追加
         for question in self.df["question"]:
-            question = process_text(question)
+            question = process_text_q(question)
             words = question.split(" ")
             for word in words:
                 if word not in self.question2idx:
@@ -361,14 +404,21 @@ def eval(model, dataloader, optimizer, criterion, device):
 def main():
     # deviceの設定
     set_seed(42)
+    #device = torch.device("mps")
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # dataloader / model
+    transform_train = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomRotation(degrees=(-90, 90)),
+        transforms.ToTensor()
+    ])
+
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor()
     ])
-    train_dataset = VQADataset(df_path="./data/train.json", image_dir="./data/train", transform=transform)
+    train_dataset = VQADataset(df_path="./data/train.json", image_dir="./data/train", transform=transform_train)
     test_dataset = VQADataset(df_path="./data/valid.json", image_dir="./data/valid", transform=transform, answer=False)
     test_dataset.update_dict(train_dataset)
 
@@ -378,7 +428,7 @@ def main():
     model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx)).to(device)
 
     # optimizer / criterion
-    num_epoch = 20
+    num_epoch = 20 #20
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 
